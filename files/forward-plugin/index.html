@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+	/* 与信息屏 /www/style.css 同一套 token：卡片 #161b23 / 圆角 10 / 9px 11px，
+	   行距 7px，标签暗、值粗，按钮 #232a35 圆角 8，聚焦 2px 白圈。
+	   插件是独立 iframe，拿不到父页的变量，所以这里照抄数值而不引 style.css。 */
+	:root {
+		--bg: #0b0e13; --card: #161b23; --line: #232a35; --text: #e8ecf2;
+		--dim: #8b95a5; --accent: #4aa3ff; --good: #3ccf7a; --fair: #f2c14b;
+		--poor: #f0625a; --focus: #ffffff;
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; background: var(--bg); color: var(--text);
+		font-family: "Noto Sans CJK SC", "DejaVu Sans", sans-serif; font-size: 15px;
+		-webkit-user-select: none; user-select: none; cursor: none; }
+	body { padding: 8px; }
+
+	.card { background: var(--card); border-radius: 10px; padding: 9px 11px; margin-bottom: 7px; }
+	.row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+	.row + .row { margin-top: 6px; }
+	.label { color: var(--dim); flex: 0 0 auto; max-width: 48%; }
+	.value { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+	/* 目标主机过长时独占整行（信息屏对长值用的就是整行换行，不做省略号），
+	   避免右侧栏位太窄导致最后一行只剩一个字符 */
+	.row.stack { display: block; }
+	.row.stack .value { display: block; text-align: left; margin-top: 2px; }
+	.val { font-weight: bold; }
+	.sub { color: var(--dim); font-size: 12px; line-height: 1.5; }
+	.good { color: var(--good); } .fair { color: var(--fair); }
+	.poor { color: var(--poor); } .off { color: var(--dim); }
+
+	/* 队列占用：与信息屏的流量条同一种 5px 轨道 */
+	.track { height: 5px; background: var(--line); border-radius: 4px; overflow: hidden; margin-top: 7px; }
+	.track[hidden] { display: none; }
+	.track i { display: block; height: 100%; width: 0; border-radius: 4px; background: var(--dim); transition: width 0.4s; }
+	.track.warn i { background: var(--fair); }
+	.track.bad i { background: var(--poor); }
+	.note { margin-top: 6px; }
+
+	button { font: inherit; color: var(--text); background: var(--line); border: 0; border-radius: 8px;
+		padding: 9px; width: 100%; outline: none; margin-bottom: 7px; }
+	button:focus { box-shadow: 0 0 0 2px var(--focus); }
+	button:active { filter: brightness(1.3); }
+	.btns { display: flex; gap: 8px; }
+	.btns button { flex: 1; min-width: 0; }
+
+	/* 列表：卡内行，时间暗小字 + 结果右侧，与短信页的行宽一致 */
+	.lh { color: var(--dim); font-size: 12px; margin-bottom: 5px; }
+	.res { font-size: 13px; }
+	.num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="card">
+	<div class="row"><span class="label" id="l-state"></span><span class="value val off" id="s-state">--</span></div>
+	<div class="row" id="r-target"><span class="label" id="l-target"></span><span class="value" id="s-target">--</span></div>
+	<div class="row"><span class="label" id="l-queue"></span><span class="value" id="s-queue">--</span></div>
+	<div class="track" id="s-track" hidden><i id="s-fill"></i></div>
+	<div class="sub note" id="s-note" hidden></div>
+</div>
+<button id="b-toggle"></button>
+<div class="btns">
+	<button id="b-test"></button><button id="b-retry"></button>
+</div>
+<div class="card">
+	<div class="lh" id="l-recent"></div>
+	<div id="list"></div>
+</div>
+<script src="/sdk/e5.js"></script>
+<script>
+'use strict';
+// sms-forward 的状态视图：开关整体回写配置，队列与投递记录只读；
+// 测试发送/重试队列都交给后台，页面不阻塞。
+const $ = (id) => document.getElementById(id);
+const ACTIONS = ['b-toggle', 'b-test', 'b-retry'];
+let st = null, busy = false, sel = 0, timer = null;
+
+const T = {
+	state: { zh: '状态', en: 'State' },
+	target: { zh: '目标', en: 'Target' },
+	queue: { zh: '队列', en: 'Queue' },
+	on: { zh: '已开启', en: 'On' },
+	off: { zh: '已关闭', en: 'Off' },
+	loading: { zh: '读取中', en: 'Loading' },
+	unavailable: { zh: '不可用', en: 'Unavailable' },
+	noTarget: { zh: '未设置', en: 'Not set' },
+	turnOff: { zh: '关闭转发', en: 'Turn off' },
+	turnOn: { zh: '开启转发', en: 'Turn on' },
+	test: { zh: '测试发送', en: 'Send a test' },
+	retry: { zh: '重试队列', en: 'Retry queue' },
+	recent: { zh: '最近投递', en: 'Recent deliveries' },
+	none: { zh: '暂无记录', en: 'Nothing yet' },
+	testing: { zh: '已开始测试发送', en: 'Test send started' },
+	retrying: { zh: '已开始重试队列', en: 'Queue retry started' },
+	failed: { zh: '失败', en: 'Failed' },
+	toggling: { zh: '切换失败', en: 'Toggle failed' },
+	unavail: { zh: '转发不可用', en: 'Forward unavailable' },
+	setFailed: { zh: '写入失败', en: 'Write failed' }
+};
+const t = (k) => e5.t(T[k]);
+
+// 后端返回的是脚本内部英文错误码，界面上不直接暴露。
+const ERR = { 'forward unavailable': 'unavail', 'set failed': 'setFailed', 'test failed': 'failed' };
+const err = (e) => (ERR[e] ? t(ERR[e]) : (e ?? t('unavail')));
+
+function esc(s) {
+	return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function hhmm(sec) {
+	const d = e5.time((sec ?? 0) * 1000);
+	return d ? d.slice(0, 5) : '--';
+}
+
+function paintSel() {
+	ACTIONS.forEach((id, i) => $(id).classList.toggle('sel', i == sel));
+	if (document.activeElement === document.body) $(ACTIONS[sel]).focus({ preventScroll: true });
+}
+
+function draw() {
+	$('l-state').textContent = t('state');
+	$('l-target').textContent = t('target');
+	$('l-queue').textContent = t('queue');
+	$('l-recent').textContent = t('recent');
+	$('b-test').textContent = t('test');
+	$('b-retry').textContent = t('retry');
+
+	if (!st || st.ok !== true) {
+		$('s-state').textContent = t('unavailable');
+		$('s-state').className = 'value val poor';
+		$('s-target').textContent = '--';
+		$('s-queue').textContent = '--';
+		$('s-track').hidden = true;
+		$('s-note').textContent = st?.error ?? '';
+		$('s-note').hidden = !st?.error;
+		$('b-toggle').textContent = t('turnOn');
+		$('list').innerHTML = `<div class="sub">${t('none')}</div>`;
+		return;
+	}
+
+	$('s-note').hidden = true;
+	$('s-state').textContent = st.enabled ? t('on') : t('off');
+	$('s-state').className = 'value val ' + (st.enabled ? 'good' : 'off');
+	$('s-target').textContent = st.target ?? t('noTarget');
+	$('s-target').className = 'value' + (st.target ? '' : ' sub');
+	$('r-target').classList.toggle('stack', !!(st.target && st.target.length > 24));
+	$('b-toggle').textContent = st.enabled ? t('turnOff') : t('turnOn');
+
+	const q = st.queue ?? { pending: 0, limit: 7 };
+	$('s-queue').textContent = `${q.pending}/${q.limit}`;
+	const full = q.pending >= q.limit && q.limit > 0;
+	$('s-queue').className = 'value num' + (full ? ' poor' : q.pending > 0 ? ' fair' : '');
+	$('s-track').hidden = !(q.pending > 0);
+	$('s-fill').style.width = Math.min(100, 100 * q.pending / Math.max(1, q.limit)) + '%';
+	$('s-track').classList.toggle('warn', q.pending > 0 && !full);
+	$('s-track').classList.toggle('bad', full);
+
+	let items = [];
+	if (st.recent?.length)
+		items = st.recent.map((r) => ({ time: hhmm(r.time), text: r.label, ok: r.result == 'sent' }));
+	else
+		items = (st.log ?? []).map((x) => ({ time: x.time, text: x.text, ok: x.ok !== false }));
+
+	$('list').innerHTML = items.length ? items.map((x) =>
+		`<div class="row"><span class="sub num">${esc(x.time)}</span>` +
+		`<span class="value res ${x.ok ? 'good' : 'poor'}">${esc(x.text)}</span></div>`
+	).join('') : `<div class="sub">${t('none')}</div>`;
+}
+
+async function refresh() {
+	try { st = await e5.api('/status'); } catch (e) { st = { ok: false, error: e.message }; }
+	draw();
+}
+
+async function run(which) {
+	if (busy) return;
+	busy = true;
+	e5.keepAwake(true);
+	try {
+		if (which == 'b-toggle') {
+			st = await e5.api('/toggle', { body: { on: !st.enabled } });
+			if (st.ok !== true) e5.toast(err(st.error) ?? t('toggling'));
+		} else if (which == 'b-test') {
+			const r = await e5.api('/test', { body: {} });
+			e5.toast(r.ok ? t('testing') : err(r.error ?? 'test failed'));
+			await new Promise((r2) => setTimeout(r2, 2500));
+			await refresh();
+		} else {
+			await e5.api('/retry', { body: {} });
+			e5.toast(t('retrying'));
+			await new Promise((r2) => setTimeout(r2, 2000));
+			await refresh();
+		}
+	} catch (e) {
+		e5.toast(e.message);
+	}
+	e5.keepAwake(false);
+	busy = false;
+	draw();
+}
+
+ACTIONS.forEach((id, i) => {
+	$(id).addEventListener('click', () => { sel = i; paintSel(); run(id); });
+});
+
+e5.onKey((k) => {
+	if (k.kind == 'up') { sel = (sel + ACTIONS.length - 1) % ACTIONS.length; paintSel(); return true; }
+	if (k.kind == 'down') { sel = (sel + 1) % ACTIONS.length; paintSel(); return true; }
+	if (k.kind == 'ok') { $(ACTIONS[sel]).click(); return true; }
+	return false;
+});
+
+paintSel();
+$('s-state').textContent = t('loading');
+$('b-toggle').textContent = t('turnOn');
+$('b-test').textContent = t('test');
+$('b-retry').textContent = t('retry');
+refresh();
+timer = setInterval(() => { if (document.visibilityState != 'hidden') refresh(); }, 5000);
+window.addEventListener('pagehide', () => clearInterval(timer));
+</script>
+</body>
+</html>
