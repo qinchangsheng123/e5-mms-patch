@@ -3,7 +3,7 @@
 E5（Unisoc UMS9621）随身路由刷 e5-sleep 系列 OpenWrt 后，用来做**纯短信盒子**的用户空间补丁：
 只收短信、转发到手机，不开热点、不做文件共享或代理。不碰内核、不动固件分区，配置和源件全在
 `/etc/e5`（跨升级保留），由 S19 开机自愈链铺回被升级覆盖的 `/usr` 文件，卸载可完整回滚。
-当前版本 **v1.0.9**。
+当前版本 **v1.0.11**。
 
 一句话概括：把一台待机 600-900mW 乱跳、彩信显示乱码、转发丢消息、升级就失效的随身路由，
 改成端到端 7 秒推送、能熄屏深睡、能自愈的短信网关。
@@ -41,7 +41,7 @@ E5（Unisoc UMS9621）随身路由刷 e5-sleep 系列 OpenWrt 后，用来做**�
 
 ```sh
 wget -q -O /tmp/e5-mms.sh --header='Accept: application/vnd.github.raw' \
-  https://api.github.com/repos/qingchangsheng123/e5-mms-patch/contents/install.sh && sh /tmp/e5-mms.sh
+  https://api.github.com/repos/qinchangsheng123/e5-mms-patch/contents/install.sh && sh /tmp/e5-mms.sh
 ```
 
 脚本发现本地没有 `files/` 会自动下载发布包再安装。
