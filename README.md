@@ -56,6 +56,50 @@ wget -q -O /tmp/e5-mms.sh --header='Accept: application/vnd.github.raw' \
 sh install.sh
 ```
 
+### 方式三：PC 侧一键部署（`tools/`）
+
+不想在设备上敲命令时，在电脑上跑。Windows 用户直接双击 `tools/e5-deploy.bat` 就是
+「本地一键」：自动挑本地版本最高的补丁包、不联网、参数原样透传。
+
+```sh
+python tools/e5-deploy.py                 # 自动挑版本最高的源，不用记路径
+python tools/e5-deploy.py --list          # 列出所有可用源
+python tools/e5-deploy.py --dry-run       # 只预检 + 设备上跑 install.sh --dry-run
+python tools/e5-deploy.py --force         # 设备已是最新也重装
+python tools/e5-deploy.py --from-github   # 本机取 main 最新，再推给设备
+python tools/e5-deploy.py xxx.zip         # 装指定的包（zip / tar.gz / 工作树目录）
+```
+
+脚本自己挑 Python 解释器（优先已装 `paramiko` 的那个），缺依赖时自动 `pip install paramiko`。
+连接默认 `root@192.168.9.1`，可用环境变量 `E5_HOST` / `E5_USER` / `E5_PASS` 覆盖；
+走 WiFi 通道时设 `E5_BIND=192.168.9.100` 绑定源地址。
+
+**找包规则**：扫当前目录、`dist/`、`cwd/dist` 与工作树本身，取版本号最高的；同版本优先
+已打包的 `zip` / `tar.gz`（发布态）而不是工作树。**比设备上已装版本旧会直接拒绝**，
+确实要降级必须显式加 `--allow-downgrade`——这条是为了防止一句命令行把设备刷回老版本。
+
+它做六件事：定位包 → 连接（3 次重试）→ 预检（固件形态、`/tmp` 空间、当前队列、
+版本比对）→ 备份到 `/root/e5-backup/pre-deploy-<时间>.tar.gz` → 上传（sftp，失败退
+base64+openssl，md5 双向校验）→ 解包跑 `install.sh` → 验证三个核心文件 md5、两个
+守护进程、`e5-forward` 配置与 S19 自启。
+
+退出码：`0` 成功 / `1` 预检失败 / `2` 传输失败 / `3` 安装失败 / `4` 验证失败。
+成功时会打印真实可用的回滚命令（`tar -xzf /root/e5-backup/pre-deploy-<时间>.tar.gz -C / && reboot`）。
+`install.sh` 自己提示的 `/tmp/e5-deploy/...` 路径在部署结束后已被清理，不能照抄那条。
+
+不是所有部署都该用它——它只**安装补丁**，不适用于刷整机镜像（那是 LuCI 系统升级页的事）。
+
+### 单文件分发包（给不想敲命令的人）
+
+```sh
+python tools/make-kit.py
+# 产出 e5-deploy-kit-<version>.zip
+```
+
+解压得到一个文件夹：`一键部署.bat`（双击）、`e5-deploy.py`、`e5-mms-patch-<version>.zip`、
+`使用说明.txt`。补丁包**平铺在根目录**，所以解压到桌面、U 盘或任意路径都能直接跑，
+不用改任何配置。
+
 ### 安装时发生了什么
 
 ```
@@ -356,7 +400,13 @@ files/
   e5-usb-guard.init     开机自检服务（S99/K10）
   pm-test.sh            过夜功耗测试 v5（源件放 /etc/e5/usb/，装到 /root）
   sms-sync/             双系统短信同步：sms-sync.py / install.sh / init / uninstall.sh
+tools/
+  e5-deploy.py          PC 侧一键部署（不打包进 dist，仅仓库内使用）
+  e5-deploy.bat         Windows 双击包装（本地一键，不需参数）
+  make-kit.py           把补丁包 + 部署脚本打成 `e5-deploy-kit-<version>.zip`
 ```
+
+> `tools/` 刻意不进 `package.sh` 的打包清单：它是电脑上的工具，装到设备上没用。
 
 ## 打包分发
 
